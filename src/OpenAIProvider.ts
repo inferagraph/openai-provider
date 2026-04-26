@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { LLMProvider } from '@inferagraph/core';
-import type { LLMCompletionRequest, LLMCompletionResponse } from '@inferagraph/core';
+import type { LLMCompletionRequest, LLMCompletionResponse, LLMStreamChunk } from '@inferagraph/core';
 import type { OpenAIProviderConfig } from './types.js';
 
 const DEFAULT_MODEL = 'gpt-4o';
@@ -45,6 +45,31 @@ export class OpenAIProvider extends LLMProvider {
           }
         : undefined,
     };
+  }
+
+  async *stream(request: LLMCompletionRequest): AsyncIterable<LLMStreamChunk> {
+    try {
+      const stream = await this.client.chat.completions.create({
+        model: this.model,
+        max_tokens: request.maxTokens ?? this.maxTokens,
+        ...(request.temperature !== undefined && { temperature: request.temperature }),
+        messages: request.messages.map(m => ({
+          role: m.role,
+          content: m.content,
+        })),
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content;
+        if (content) {
+          yield { type: 'text' as const, content };
+        }
+      }
+      yield { type: 'done' as const, content: '' };
+    } catch (error) {
+      yield { type: 'error' as const, content: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   isConfigured(): boolean {
