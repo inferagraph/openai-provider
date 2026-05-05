@@ -158,7 +158,7 @@ async function* openaiStream(
   opts: StreamOptions = {},
 ): AsyncIterable<LLMStreamEvent> {
   // Translate the contract's neutral tool shape into OpenAI's function-tool
-  // format. Empty-tools is normalised to `undefined` so the SDK doesn't
+  // format. Empty-tools is normalized to `undefined` so the SDK doesn't
   // attach an empty `tools` array (which the API rejects).
   const tools = (opts.tools ?? []).map((t) => ({
     type: 'function' as const,

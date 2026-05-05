@@ -490,7 +490,7 @@ describe('openaiProvider', () => {
       );
     });
 
-    it('honours config.embeddingModel as the constructor-level default', async () => {
+    it('honors config.embeddingModel as the constructor-level default', async () => {
       embedCreate.mockResolvedValueOnce(embedResponse([[1, 2, 3]]));
       const provider = openaiProvider({
         apiKey: 'k',
@@ -504,7 +504,7 @@ describe('openaiProvider', () => {
       );
     });
 
-    it('honours opts.model as a per-call override', async () => {
+    it('honors opts.model as a per-call override', async () => {
       embedCreate.mockResolvedValueOnce(embedResponse([[0]]));
       const provider = openaiProvider({ apiKey: 'k', client });
       await provider.embed!(['x'], { model: 'text-embedding-ada-002' });
