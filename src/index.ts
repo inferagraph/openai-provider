@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type {
+  LLMMessage,
   LLMProvider,
   LLMStreamEvent,
   StreamOptions,
@@ -126,7 +127,23 @@ export function openaiProvider(
     },
 
     stream(prompt, opts) {
-      return openaiStream(client, model, prompt, opts);
+      // Back-compat: thin wrapper that flattens the single prompt into a
+      // one-message user-role exchange and delegates to streamMessages.
+      return openaiStreamMessages(
+        client,
+        model,
+        [{ role: 'user', content: prompt }],
+        opts,
+      );
+    },
+
+    streamMessages(messages, opts) {
+      // Structured-roles path: maps the contract's `messages` array directly
+      // onto OpenAI's chat.completions `messages` parameter so system / user
+      // / assistant roles survive end-to-end. This is the path the AIEngine
+      // takes whenever the provider exposes it (system-role directives carry
+      // their full weight for tool-use-trained models).
+      return openaiStreamMessages(client, model, messages, opts);
     },
 
     async embed(texts: string[], opts?: EmbedOptions): Promise<Vector[]> {
@@ -243,10 +260,10 @@ export function azureOpenaiProvider(
   return inner;
 }
 
-async function* openaiStream(
+async function* openaiStreamMessages(
   client: OpenAI,
   model: string,
-  prompt: string,
+  messages: LLMMessage[],
   opts: StreamOptions = {},
 ): AsyncIterable<LLMStreamEvent> {
   // Translate the contract's neutral tool shape into OpenAI's function-tool
@@ -264,7 +281,10 @@ async function* openaiStream(
   const stream = await client.chat.completions.create(
     {
       model,
-      messages: [{ role: 'user', content: prompt }],
+      // The OpenAI SDK's `messages` parameter speaks the same role taxonomy
+      // (`system` | `user` | `assistant`) as `LLMMessage`, so we pass the
+      // array straight through without rewriting roles.
+      messages,
       max_tokens: opts.maxTokens,
       temperature: opts.temperature,
       response_format:

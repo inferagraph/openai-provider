@@ -137,4 +137,24 @@ describe('azureOpenaiProvider', () => {
     });
     expect(provider.embed).toBeUndefined();
   });
+
+  it('exposes streamMessages too (inherited from openaiProvider)', () => {
+    // streamMessages is built on the inner openaiProvider, so the azure
+    // factory MUST surface it for both shapes (with and without embed).
+    const withEmbed = azureOpenaiProvider({
+      apiKey: 'k',
+      endpoint: 'https://x.openai.azure.com/',
+      deployment: 'd',
+      embeddingDeployment: 'e',
+      client,
+    });
+    const withoutEmbed = azureOpenaiProvider({
+      apiKey: 'k',
+      endpoint: 'https://x.openai.azure.com/',
+      deployment: 'd',
+      client,
+    });
+    expect(typeof withEmbed.streamMessages).toBe('function');
+    expect(typeof withoutEmbed.streamMessages).toBe('function');
+  });
 });

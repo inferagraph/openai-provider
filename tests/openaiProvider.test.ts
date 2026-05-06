@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type OpenAI from 'openai';
-import type { LLMStreamEvent } from '@inferagraph/core';
+import type { LLMMessage, LLMStreamEvent } from '@inferagraph/core';
 import { openaiProvider } from '../src/index.js';
 
 /**
@@ -606,6 +606,189 @@ describe('openaiProvider', () => {
       embedCreate.mockRejectedValueOnce(new Error('rate limit'));
       const provider = openaiProvider({ apiKey: 'k', client });
       await expect(provider.embed!(['x'])).rejects.toThrow('rate limit');
+    });
+  });
+
+  describe('streamMessages()', () => {
+    it('forwards every message verbatim to chat.completions.create', async () => {
+      // Capture-only: assert the OpenAI client sees the exact `messages`
+      // array we passed in, with no flattening or role rewriting.
+      create.mockResolvedValueOnce(asyncIterableOf([]));
+      const provider = openaiProvider({ apiKey: 'k', client });
+      const messages: LLMMessage[] = [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'usr' },
+      ];
+      await collect(provider.streamMessages!(messages));
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'usr' },
+          ],
+          stream: true,
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('preserves the system role (does NOT collapse to user)', async () => {
+      // Regression guard: the bug we're fixing is exactly this — directives
+      // delivered as user-role content get heavily discounted by tool-use-
+      // trained models. The system role MUST survive the round-trip.
+      create.mockResolvedValueOnce(asyncIterableOf([]));
+      const provider = openaiProvider({ apiKey: 'k', client });
+      await collect(
+        provider.streamMessages!([
+          { role: 'system', content: 'You are a graph filter assistant.' },
+        ]),
+      );
+      const args = create.mock.calls[0]![0] as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      expect(args.messages).toHaveLength(1);
+      expect(args.messages[0]!.role).toBe('system');
+      expect(args.messages[0]!.content).toBe(
+        'You are a graph filter assistant.',
+      );
+    });
+
+    it('preserves multiple turns (user/assistant interleaved)', async () => {
+      // Engine retry path appends prior assistant turn + a system correction
+      // after a malformed tool call; ordering must be preserved exactly.
+      create.mockResolvedValueOnce(asyncIterableOf([]));
+      const provider = openaiProvider({ apiKey: 'k', client });
+      const messages: LLMMessage[] = [
+        { role: 'system', content: 'Be precise.' },
+        { role: 'user', content: 'Show patriarchs.' },
+        { role: 'assistant', content: '{"oops": malformed' },
+        { role: 'user', content: 'Try again with valid JSON.' },
+      ];
+      await collect(provider.streamMessages!(messages));
+      const args = create.mock.calls[0]![0] as {
+        messages: LLMMessage[];
+      };
+      expect(args.messages).toEqual([
+        { role: 'system', content: 'Be precise.' },
+        { role: 'user', content: 'Show patriarchs.' },
+        { role: 'assistant', content: '{"oops": malformed' },
+        { role: 'user', content: 'Try again with valid JSON.' },
+      ]);
+    });
+
+    it('forwards the tools option', async () => {
+      create.mockResolvedValueOnce(asyncIterableOf([]));
+      const provider = openaiProvider({ apiKey: 'k', client });
+      await collect(
+        provider.streamMessages!(
+          [{ role: 'user', content: 'hi' }],
+          {
+            tools: [
+              {
+                name: 'apply_filter',
+                description: 'Restrict the visible set',
+                parameters: {
+                  type: 'object',
+                  properties: { predicate: { type: 'string' } },
+                  required: ['predicate'],
+                },
+              },
+            ],
+          },
+        ),
+      );
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'apply_filter',
+                description: 'Restrict the visible set',
+                parameters: {
+                  type: 'object',
+                  properties: { predicate: { type: 'string' } },
+                  required: ['predicate'],
+                },
+              },
+            },
+          ],
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('honors AbortSignal (forwards as request option, iterator stops cleanly)', async () => {
+      const ctrl = new AbortController();
+      // Yield one chunk, then the consumer aborts before consuming more.
+      create.mockResolvedValueOnce(
+        asyncIterableOf([
+          { choices: [{ delta: { content: 'partial' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      );
+      const provider = openaiProvider({ apiKey: 'k', client });
+      const events = await collect(
+        provider.streamMessages!([{ role: 'user', content: 'hi' }], {
+          signal: ctrl.signal,
+        }),
+      );
+      ctrl.abort();
+      // Signal was forwarded as the SDK request option.
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ stream: true }),
+        { signal: ctrl.signal },
+      );
+      // Iterator drained cleanly (final done event present).
+      expect(events.at(-1)).toEqual({ type: 'done', reason: 'stop' });
+    });
+
+    it('yields the same chunk shape as stream() for the same logical content', async () => {
+      // Comparative fixture: identical OpenAI chunks, delivered via stream()
+      // vs streamMessages([{role:'user',content:'hi'}]). Output events must
+      // be deep-equal so the engine sees a uniform contract.
+      const chunks = [
+        { choices: [{ delta: { content: 'Hello' } }] },
+        { choices: [{ delta: { content: ' world' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' as const }] },
+      ];
+      create.mockResolvedValueOnce(asyncIterableOf(chunks));
+      const provider1 = openaiProvider({ apiKey: 'k', client });
+      const fromStream = await collect(provider1.stream('hi'));
+
+      const second = buildMockClient();
+      second.create.mockResolvedValueOnce(asyncIterableOf(chunks));
+      const provider2 = openaiProvider({ apiKey: 'k', client: second.client });
+      const fromStreamMessages = await collect(
+        provider2.streamMessages!([{ role: 'user', content: 'hi' }]),
+      );
+
+      expect(fromStreamMessages).toEqual(fromStream);
+    });
+
+    it('stream() still works (back-compat)', async () => {
+      // Sanity guard: adding streamMessages must not break the existing
+      // single-prompt path. Mirrors the original stream() happy-path test.
+      create.mockResolvedValueOnce(
+        asyncIterableOf([
+          { choices: [{ delta: { content: 'ok' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      );
+      const provider = openaiProvider({ apiKey: 'k', client });
+      const events = await collect(provider.stream('hi'));
+      expect(events).toEqual([
+        { type: 'text', delta: 'ok' },
+        { type: 'done', reason: 'stop' },
+      ]);
+      // And the SDK still sees the user-role flattening for stream().
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        }),
+        expect.any(Object),
+      );
     });
   });
 });
