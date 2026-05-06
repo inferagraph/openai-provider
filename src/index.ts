@@ -151,6 +151,98 @@ export function openaiProvider(
   };
 }
 
+/**
+ * Configuration for the Azure OpenAI provider.
+ *
+ * Azure's v1 API surface is fully OpenAI-compatible: callers use the standard
+ * `OpenAI` client class with a baseURL of `<endpoint>/openai/v1/`, send the
+ * deployment name as the `model` field, and skip `api-version` query strings
+ * entirely (they were retired in v1; see
+ * https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle).
+ *
+ * This factory encapsulates that wiring so hosts pass only domain-meaningful
+ * config (endpoint, apiKey, deployment names) and never see SDK internals.
+ */
+export interface AzureOpenAIProviderConfig {
+  /** Bare resource URL, e.g. `https://my-resource.openai.azure.com/`. */
+  endpoint: string;
+  /** Azure OpenAI API key (the legacy `api-key` header value). */
+  apiKey: string;
+  /** Chat deployment name — sent as `model` on chat completions. */
+  deployment: string;
+  /**
+   * Embedding deployment name — sent as `model` on embeddings calls.
+   * Optional; if omitted, the provider has no embedding capability and
+   * `embed` is `undefined`.
+   */
+  embeddingDeployment?: string;
+  /**
+   * Optional injection seam for tests: a pre-built OpenAI client. When
+   * supplied, the factory uses it as-is and skips internal SDK construction.
+   * Production callers should not pass this.
+   */
+  client?: OpenAI;
+  /**
+   * Optional injection seam for tests: an alternative `OpenAI` constructor.
+   * Lets tests assert the exact `{ apiKey, baseURL }` the factory passes
+   * without instantiating a real network-bound client. Production callers
+   * should not pass this.
+   */
+  openaiCtor?: typeof OpenAI;
+}
+
+/**
+ * Construct an {@link LLMProvider} backed by Azure OpenAI's v1 API.
+ *
+ * Encapsulates v1 SDK setup: trims trailing slashes from `endpoint`, appends
+ * `/openai/v1/`, builds the standard `OpenAI` client (NOT `AzureOpenAI` — the
+ * v1 surface is OpenAI-compatible), and delegates to {@link openaiProvider}.
+ *
+ * ```ts
+ * import { azureOpenaiProvider } from '@inferagraph/openai-provider';
+ *
+ * <InferaGraph
+ *   data={data}
+ *   llm={azureOpenaiProvider({
+ *     endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
+ *     apiKey: process.env.AZURE_OPENAI_KEY!,
+ *     deployment: 'gpt-4o',
+ *     embeddingDeployment: 'text-embedding-3-small', // optional
+ *   })}
+ * />
+ * ```
+ */
+export function azureOpenaiProvider(
+  config: AzureOpenAIProviderConfig,
+): LLMProviderWithEmbed | LLMProvider {
+  const Ctor = config.openaiCtor ?? OpenAI;
+  const baseURL = `${config.endpoint.replace(/\/+$/, '')}/openai/v1/`;
+  const client =
+    config.client ?? new Ctor({ apiKey: config.apiKey, baseURL });
+
+  // Delegate to the public openaiProvider so chat / streaming / embeddings
+  // logic stays single-sourced. The deployment name flows through as `model`.
+  const inner = openaiProvider({
+    apiKey: config.apiKey,
+    client,
+    model: config.deployment,
+    // When no embedding deployment is configured the inner provider would
+    // still expose `embed` (it has its own default). Strip it below so the
+    // azure factory honors the documented "no embed capability" contract.
+    embeddingModel: config.embeddingDeployment,
+  });
+
+  if (config.embeddingDeployment === undefined) {
+    // Return a provider WITHOUT embed. Use a fresh object so we don't mutate
+    // the inner provider; the resulting shape matches the base `LLMProvider`
+    // contract (embed is optional there).
+    const { embed: _embed, ...rest } = inner;
+    return rest;
+  }
+
+  return inner;
+}
+
 async function* openaiStream(
   client: OpenAI,
   model: string,

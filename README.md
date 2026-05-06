@@ -36,17 +36,44 @@ import { InferaGraph } from '@inferagraph/core/react';
 | `project` | Optional OpenAI project id. Ignored when `client` is provided. |
 | `client` | Pre-built `OpenAI` SDK client. When supplied, all other connection fields are ignored. Primary use case: tests / mocks. |
 
-### Azure OpenAI / OpenRouter / GitHub Models
+### Azure OpenAI
 
-The `baseURL` (or pre-built `client`) escape hatch covers any OpenAI-compatible API:
+Use `azureOpenaiProvider` — it encapsulates Azure OpenAI v1 SDK construction so you never build an `OpenAI` / `AzureOpenAI` client by hand:
+
+```ts
+import { azureOpenaiProvider } from '@inferagraph/openai-provider';
+
+azureOpenaiProvider({
+  endpoint: process.env.AZURE_OPENAI_ENDPOINT!, // e.g. https://my-resource.openai.azure.com/
+  apiKey: process.env.AZURE_OPENAI_KEY!,
+  deployment: 'gpt-4o',                          // chat deployment name
+  embeddingDeployment: 'text-embedding-3-small', // optional; omit for chat-only
+});
+```
+
+| Option | Description |
+|---|---|
+| `endpoint` | Bare resource URL. Trailing slashes are trimmed; the factory appends `/openai/v1/` for you. The v1 surface replaces dated `api-version` query strings entirely ([Azure docs](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle)). |
+| `apiKey` | Azure OpenAI API key. Server-side only. |
+| `deployment` | Chat deployment name. Sent as `model` on chat completions. |
+| `embeddingDeployment` | Embedding deployment name. Sent as `model` on embeddings calls. Optional — when omitted the provider has no `embed` capability. |
+| `client` | Pre-built `OpenAI` SDK client. When supplied, all other connection fields are ignored. Primary use case: tests / mocks. |
+
+The factory uses the standard `OpenAI` class (NOT `AzureOpenAI`) — the v1 endpoint is fully OpenAI-compatible.
+
+#### Legacy escape hatch
+
+For OpenRouter, GitHub Models, or any other OpenAI-compatible API, the `openaiProvider` `baseURL` (or pre-built `client`) escape hatch still works:
 
 ```ts
 openaiProvider({
-  apiKey: process.env.AZURE_OPENAI_KEY!,
-  baseURL: 'https://my-resource.openai.azure.com/openai/deployments/my-deployment',
+  apiKey: process.env.OTHER_PROVIDER_KEY!,
+  baseURL: 'https://other-openai-compatible-host/v1',
   model: 'gpt-4o',
 });
 ```
+
+For Azure specifically, prefer `azureOpenaiProvider` over hand-rolling `openaiProvider({ client: new AzureOpenAI(...) })` — the new factory keeps Azure-specific URL math out of your codebase.
 
 ### Streaming + tool calls
 
