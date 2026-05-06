@@ -79,6 +79,55 @@ For Azure specifically, prefer `azureOpenaiProvider` over hand-rolling `openaiPr
 
 `stream()` translates the locked `LLMToolDefinition[]` shape into OpenAI's function-tool format and emits unified `LLMStreamEvent`s (`text` / `tool_call` / `done`). Tool calls are buffered per `index` across deltas and flushed after the text stream closes — matching the contract's documented order.
 
+### `streamMessages(messages, opts)` (recommended)
+
+`stream(prompt: string)` accepts a single user prompt. `streamMessages(messages)` accepts a structured conversation array, which unlocks:
+
+- **`system` role** for system prompts. Tool-use-trained models heavily discount instructions delivered as user-role content; passing them under `system` keeps directives where the model is trained to obey them. (Better than prepending to the user message.)
+- **`assistant` role** to replay prior model turns — multi-turn conversation memory, corrective-retry flows after malformed tool calls, etc.
+- **Multi-turn conversations** as a sequence of alternating `user` / `assistant` turns following an optional leading `system` turn.
+
+Signature (peer dep `@inferagraph/core@^0.8.0` exports the `LLMMessage` / `LLMRole` types):
+
+```ts
+import type { LLMMessage, LLMRole } from '@inferagraph/core';
+
+provider.streamMessages(
+  messages: LLMMessage[],
+  opts?: StreamOptions,
+): AsyncIterable<LLMStreamEvent>;
+```
+
+Example — system prompt plus a 2-turn exchange:
+
+```ts
+import { openaiProvider } from '@inferagraph/openai-provider';
+import type { LLMMessage } from '@inferagraph/core';
+
+const provider = openaiProvider({
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: 'gpt-4o-mini',
+});
+
+const messages: LLMMessage[] = [
+  { role: 'system', content: 'You are a concise assistant. Reply in one sentence.' },
+  { role: 'user', content: 'Who wrote the Iliad?' },
+  { role: 'assistant', content: 'Tradition attributes the Iliad to Homer.' },
+  { role: 'user', content: 'And the Odyssey?' },
+];
+
+for await (const ev of provider.streamMessages!(messages)) {
+  if (ev.type === 'text') process.stdout.write(ev.delta);
+  if (ev.type === 'done') break;
+}
+```
+
+The OpenAI SDK keeps `system` inline as the first message in the `chat.completions` `messages` array, so the contract array maps onto the SDK call essentially 1:1 — roles survive end-to-end.
+
+#### Back-compat
+
+`stream(prompt)` still works and is unchanged. It is internally a thin wrapper that calls `streamMessages([{ role: 'user', content: prompt }])`, so single-prompt behavior is identical. New consumers should prefer `streamMessages` whenever a system prompt or prior turns are involved.
+
 ### Embeddings
 
 `embed(texts)` returns `Vector[]` (one per input, in input order) using the configured `embeddingModel`. Empty inputs short-circuit to `[]` rather than calling the API.
