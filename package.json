@@ -1,6 +1,6 @@
 {
   "name": "@inferagraph/openai-provider",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "OpenAI provider for InferaGraph",
   "repository": {
     "type": "git",

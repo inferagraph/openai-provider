@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type OpenAI from 'openai';
-import type { LLMMessage, LLMStreamEvent } from '@inferagraph/core';
+import type { LLMMessage, LLMStreamEvent } from '@inferagraph/core/data';
 import { openaiProvider } from '../src/index.js';
 
 /**
